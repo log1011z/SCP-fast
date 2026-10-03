@@ -10,7 +10,8 @@ import { TransferEngine, CollisionChoice } from './transfer';
 import { TransferLog } from './log';
 import { TransferView, stateNames } from './view';
 import { runScp } from './process';
-import { TransferTask, terminalStates } from './types';
+import { planDownload, prepareDownloadTask } from './download';
+import { CancelledError, TransferTask, terminalStates } from './types';
 import { bytes, displayPath, duration, errorMessage, localArg, scpRemotePath, validateWindowsName } from './util';
 
 let activeQueue: TransferQueue | undefined;
@@ -60,36 +61,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
   const queue = new TransferQueue(async (task, signal) => {
     await log.open(task);
-    try { await engine.execute(task, signal); }
+    try {
+      await prepareDownloadTask(task, files, signal);
+      if (task.kind === 'directory') {
+        task.state = 'success';
+        log.write(task, `本机文件夹已准备：${task.destination}`);
+      } else await engine.execute(task, signal);
+    } catch (error) {
+      if (task.state === 'preparing') log.write(task, `下载准备失败或取消：${errorMessage(error)}`);
+      if (task.kind === 'directory') queue.cancelDescendants(task);
+      throw error;
+    }
     finally { await log.close(task); }
   }, () => {
     view?.update();
     const signature = queue.tasks.map(task => `${task.id}:${task.state}:${task.temporary ?? ''}`).join('|');
     if (signature !== persistedSignature) { persistedSignature = signature; void persist(); }
   }, async task => {
-    const elapsed = Math.max(0.001, (task.transferDurationMs ?? 0) / 1000);
-    log.channel.appendLine(`${task.name}：${stateNames[task.state]}；总耗时 ${duration(((task.finishedAt ?? Date.now()) - (task.startedAt ?? Date.now())) / 1000)}；平均传输速度 ${bytes(task.totalBytes / elapsed)}/s${task.error ? `；${task.error}` : ''}`);
+    const elapsed = (task.transferDurationMs ?? Math.max(0, (task.scpDurationMs ?? 0) - (task.authenticationWaitMs ?? 0))) / 1000;
+    const average = task.kind !== 'directory' && elapsed > 0 ? `；平均传输速度 ${bytes((task.state === 'success' ? task.totalBytes : task.transferredBytes) / elapsed)}/s` : '';
+    log.channel.appendLine(`${task.name}：${stateNames[task.state]}；总耗时 ${duration(((task.finishedAt ?? Date.now()) - (task.startedAt ?? Date.now())) / 1000)}${average}${task.error ? `；${task.error}` : ''}`);
     await persist();
     if (task.state === 'success') {
       if (task.direction === 'upload') {
         void vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer').then(undefined,
           error => { log.channel.appendLine(`上传已成功；资源管理器刷新失败：${errorMessage(error)}`); });
       }
-      // One summary notification per batch; independent tasks can keep running.
-      const pending = queue.tasks.some(value => value.batchId === task.batchId && value.state === 'queued');
-      if (!pending) {
-        const batch = queue.tasks.filter(value => value.batchId === task.batchId);
-        const done = batch.filter(value => value.state === 'success').length;
-        void vscode.window.showInformationMessage(`SCP-Fast：本批次完成 ${done}/${batch.length} 个文件`,
-          ...(task.direction === 'download' ? ['打开本机文件夹', '查看队列'] : ['查看队列'])).then(action => {
-          if (action === '打开本机文件夹') void openFolder(task);
-          else if (action === '查看队列') void vscode.commands.executeCommand('scpFast.transfers.focus');
-        });
-      }
     } else if (task.state === 'failed') {
       void vscode.window.showErrorMessage(`SCP-Fast：${task.name} — ${task.error}`, '查看日志', '从头重试').then(action => {
         if (action === '查看日志') void log.show(task);
         if (action === '从头重试') queue.retry(task.id);
+      });
+    }
+    const batch = queue.tasks.filter(value => value.batchId === task.batchId);
+    if (batch.every(value => terminalStates.has(value.state)) && (batch.length > 1 || task.state === 'success')) {
+      const fileTasks = batch.filter(value => value.kind !== 'directory');
+      const done = fileTasks.filter(value => value.state === 'success').length;
+      const directories = batch.filter(value => value.kind === 'directory' && value.state === 'success').length;
+      const failed = batch.filter(value => value.state === 'failed').length;
+      const skipped = fileTasks.filter(value => value.state === 'skipped').length;
+      const cancelled = fileTasks.filter(value => value.state === 'cancelled').length;
+      const message = `SCP-Fast：${fileTasks.length ? `本批次完成 ${done}/${fileTasks.length} 个文件` : `已创建 ${directories} 个文件夹`}` +
+        `${failed ? `；${failed} 个任务失败` : ''}${skipped ? `；${skipped} 个文件跳过` : ''}${cancelled ? `；${cancelled} 个文件取消` : ''}`;
+      const downloaded = batch.find(value => value.direction === 'download' && value.state === 'success');
+      const notify = failed ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+      void notify(message, ...(downloaded ? ['打开本机文件夹', '查看队列'] : ['查看队列'])).then(action => {
+        if (action === '打开本机文件夹') void openFolder(downloaded);
+        else if (action === '查看队列') void vscode.commands.executeCommand('scpFast.transfers.focus');
       });
     }
   });
@@ -122,19 +140,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const host = await hosts.resolve(target.authority);
     if (!host) return;
     for (const uri of resources) {
-      if (uri.scheme !== target.scheme || uri.authority !== target.authority) throw new Error('一次下载只能选择同一台服务器的文件。');
-      const info = await files.stat(uri.toString());
-      if (!info || info.kind !== 'file') throw new Error('请选择普通文件；第一版不下载目录或符号链接。');
-      validateWindowsName(path.posix.basename(uri.path));
+      if (uri.scheme !== target.scheme || uri.authority !== target.authority) throw new Error('一次下载只能选择同一台服务器的文件或文件夹。');
     }
     const result = await vscode.window.showOpenDialog({ title: 'SCP-Fast：选择本机下载目录', openLabel: '下载到此目录',
       defaultUri: await defaultLocal(target.authority, 'download'), canSelectFiles: false, canSelectFolders: true, canSelectMany: false });
     if (!result?.length) return;
     if (result[0].scheme !== 'file') throw new Error('下载目标必须是 Windows 本机目录。');
     await context.globalState.update(recentKey(target.authority, 'download'), result[0].fsPath);
-    const seeds = resources.map(uri => ({ direction: 'download' as const, host, source: uri.toString(),
-      destination: vscode.Uri.file(path.join(result[0].fsPath, path.posix.basename(uri.path))).toString(), name: path.posix.basename(uri.path) }));
-    queue.enqueue(seeds);
+    const plan = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
+      title: 'SCP-Fast：准备下载文件和文件夹', cancellable: true }, async (progress, token) => {
+      const controller = new AbortController();
+      const subscription = token.onCancellationRequested(() => controller.abort());
+      if (token.isCancellationRequested) controller.abort();
+      let lastUpdate = 0;
+      try {
+        return await planDownload(resources.map(uri => uri.toString()), result[0].fsPath, host, files, controller.signal, value => {
+          if (Date.now() - lastUpdate < 200) return;
+          lastUpdate = Date.now();
+          progress.report({ message: `已找到 ${value.fileCount} 个文件、${value.directoryCount} 个文件夹` });
+        });
+      } finally { subscription.dispose(); }
+    });
+    queue.enqueue(plan.seeds);
+    if (plan.skipped) void vscode.window.showWarningMessage(`SCP-Fast：已跳过 ${plan.skipped} 个符号链接或特殊文件。`);
     await vscode.commands.executeCommand('scpFast.transfers.focus');
   }
   async function upload(clicked?: vscode.Uri): Promise<void> {
@@ -161,7 +189,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const command = (name: string, handler: (...args: any[]) => unknown) => {
     context.subscriptions.push(vscode.commands.registerCommand(name, async (...args: any[]) => {
       try { await handler(...args); }
-      catch (error) { void vscode.window.showErrorMessage(`SCP-Fast：${errorMessage(error)}`, '查看日志').then(action => { if (action) void log.show(); }); }
+      catch (error) {
+        if (error instanceof CancelledError) return;
+        void vscode.window.showErrorMessage(`SCP-Fast：${errorMessage(error)}`, '查看日志').then(action => { if (action) void log.show(); });
+      }
     }));
   };
   command('scpFast.download', download);
@@ -182,10 +213,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 async function openFolder(task?: TransferTask): Promise<void> {
   if (!task || task.direction !== 'download' || task.state !== 'success') return;
-  const destination = vscode.Uri.parse(task.destination);
+  const destination = vscode.Uri.parse(task.folderRoot ?? task.destination);
   const explorer = path.join(process.env.WINDIR ?? 'C:\\Windows', 'explorer.exe');
   const { spawn } = await import('node:child_process');
-  const child = spawn(explorer, ['/select,', destination.fsPath], { windowsHide: true, shell: false, detached: true, stdio: 'ignore' });
+  const child = spawn(explorer, task.folderRoot || task.kind === 'directory' ? [destination.fsPath] : ['/select,', destination.fsPath],
+    { windowsHide: true, shell: false, detached: true, stdio: 'ignore' });
   child.on('error', error => { void vscode.window.showErrorMessage(`无法打开本机文件夹：${error.message}`); });
   child.unref();
 }

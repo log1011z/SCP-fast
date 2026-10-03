@@ -1,0 +1,12 @@
+{
+  "version": "1.1.0",
+  "passed": true,
+  "time": "2026-10-03T11:04:25.748Z",
+  "folderDownloadVerified": true,
+  "folderFiles": 2,
+  "folderDirectories": 3,
+  "fileBytes": 2097152,
+  "authPrompts": 7,
+  "realRemoteSshWindowVerified": false,
+  "scope": "Native Windows scp loopback folder download; nested/empty Chinese directories; skipped-link metadata simulated; scan cancellation; destination protection and directory retry."
+}

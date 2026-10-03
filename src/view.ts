@@ -40,6 +40,8 @@ export class TransferView implements vscode.TreeDataProvider<TransferTask>, vsco
     const direction = task.direction === 'download' ? '↓ 下载' : '↑ 上传';
     if (task.state === 'transferring') {
       item.description = `${direction} · ${task.progressEstimated ? '估算 ' : ''}${percent}% · ${bytes(task.transferredBytes)} / ${bytes(task.totalBytes)} · ${bytes(task.speed)}/s · 剩余 ${remainingTime(task.remainingSeconds)}`;
+    } else if (task.state === 'success' && task.kind === 'directory') {
+      item.description = `${direction} · 文件夹已准备`;
     } else if (task.state === 'success') {
       const elapsed = Math.max(0.001, (task.transferDurationMs ?? 0) / 1000);
       item.description = `${direction} · 成功 · ${bytes(task.totalBytes)} · 平均 ${bytes(task.totalBytes / elapsed)}/s`;
@@ -47,7 +49,7 @@ export class TransferView implements vscode.TreeDataProvider<TransferTask>, vsco
     item.tooltip = `${task.name}\n${direction} · ${task.host.alias}\n${stateNames[task.state]}\n源：${displayPath(task.source)}\n目标：${displayPath(task.destination)}` +
       `${task.error ? `\n原因：${displayTaskText(task, task.error)}` : ''}${task.cleanupError ? `\n${displayTaskText(task, task.cleanupError)}` : ''}${task.temporary ? '\n保留临时文件：位置见任务日志' : ''}`;
     if (task.state === 'success') {
-      item.iconPath = new vscode.ThemeIcon('pass', new vscode.ThemeColor('testing.iconPassed'));
+      item.iconPath = new vscode.ThemeIcon(task.kind === 'directory' ? 'folder' : 'pass', new vscode.ThemeColor('testing.iconPassed'));
       item.contextValue = task.direction === 'download' ? 'scpFast.downloaded' : 'scpFast.finished';
     } else if (['failed', 'cancelled', 'interrupted'].includes(task.state)) {
       item.iconPath = new vscode.ThemeIcon(task.state === 'failed' ? 'error' : 'circle-slash', new vscode.ThemeColor('testing.iconFailed'));

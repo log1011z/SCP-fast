@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { CancelledError, TransferTask, terminalStates } from './types';
 import { errorMessage } from './util';
 
-export type TaskSeed = Pick<TransferTask, 'direction' | 'host' | 'source' | 'destination' | 'name'>;
+export type TaskSeed = Pick<TransferTask, 'direction' | 'host' | 'source' | 'destination' | 'name'> &
+  Partial<Pick<TransferTask, 'kind' | 'localRoot' | 'folderRoot'>>;
 
 export class TransferQueue {
   readonly tasks: TransferTask[] = [];
@@ -31,7 +32,8 @@ export class TransferQueue {
     if (this.disposed) throw new Error('传输队列已经关闭');
     const batchId = randomUUID();
     const created = seeds.map(seed => ({ direction: seed.direction, source: seed.source,
-      destination: seed.destination, name: seed.name, host: { ...seed.host }, id: randomUUID(), batchId,
+      destination: seed.destination, name: seed.name, kind: seed.kind, localRoot: seed.localRoot,
+      folderRoot: seed.folderRoot, host: { ...seed.host }, id: randomUUID(), batchId,
       state: 'queued' as const, totalBytes: 0, transferredBytes: 0, speed: 0,
       progressEstimated: false, createdAt: Date.now() }));
     this.tasks.push(...created);
@@ -88,10 +90,27 @@ export class TransferQueue {
     this.changed();
   }
 
+  private descendant(task: TransferTask, parent: TransferTask): boolean {
+    if (task.batchId !== parent.batchId || task.id === parent.id) return false;
+    const root = new URL(parent.destination), child = new URL(task.destination);
+    return root.protocol === child.protocol && root.host === child.host &&
+      child.pathname.toLowerCase().startsWith(root.pathname.replace(/\/$/, '').toLowerCase() + '/');
+  }
+
+  cancelDescendants(parent: TransferTask): void {
+    for (const task of this.tasks) {
+      if (task.state !== 'queued' || !this.descendant(task, parent)) continue;
+      task.state = 'cancelled'; task.finishedAt = Date.now();
+    }
+    this.changed();
+  }
+
   retry(taskId: string): TransferTask[] {
     const previous = this.tasks.find(task => task.id === taskId);
     if (!previous || !['failed', 'cancelled', 'interrupted'].includes(previous.state)) return [];
-    return this.enqueue([previous]);
+    const seeds = previous.kind === 'directory' ? this.tasks.filter(task =>
+      (task === previous || this.descendant(task, previous)) && ['failed', 'cancelled', 'interrupted'].includes(task.state)) : [previous];
+    return this.enqueue(seeds);
   }
 
   clearFinished(): void {

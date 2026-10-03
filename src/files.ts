@@ -1,8 +1,17 @@
 import * as vscode from 'vscode';
 import { promises as fs } from 'node:fs';
 import { FileInfo, TransferFiles } from './types';
+import type { DirectoryEntryKind } from './download';
+
+function entryKind(type: vscode.FileType): DirectoryEntryKind {
+  return type & vscode.FileType.SymbolicLink ? 'symlink' : type & vscode.FileType.File ? 'file' :
+    type & vscode.FileType.Directory ? 'directory' : 'unknown';
+}
 
 export class VscodeTransferFiles implements TransferFiles {
+  async readDirectory(value: string): Promise<[string, DirectoryEntryKind][]> {
+    return (await vscode.workspace.fs.readDirectory(vscode.Uri.parse(value))).map(([name, type]) => [name, entryKind(type)]);
+  }
   async stat(value: string): Promise<FileInfo | undefined> {
     const uri = vscode.Uri.parse(value);
     try {

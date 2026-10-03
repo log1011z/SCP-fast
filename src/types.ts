@@ -21,6 +21,9 @@ export interface TransferTask {
   source: string;
   destination: string;
   name: string;
+  kind?: 'file' | 'directory';
+  localRoot?: string;
+  folderRoot?: string;
   state: TaskState;
   totalBytes: number;
   transferredBytes: number;

@@ -7,7 +7,8 @@ import { createRequire } from 'node:module';
 import ssh2 from 'ssh2';
 const { Server, utils } = ssh2;
 const require = createRequire(import.meta.url);
-const { AuthBroker, runScp, TransferQueue, TransferEngine, scpRemotePath, localArg, getAccepted } = require('../test-results/core.cjs');
+const { AuthBroker, runScp, TransferQueue, TransferEngine, scpRemotePath, localArg, getAccepted,
+  planDownload, prepareDownloadTask } = require('../test-results/core.cjs');
 const workspace = path.resolve('.');
 const fixture = path.join(workspace, 'test-results', `smoke-${crypto.randomUUID()}`);
 const remoteRoot = path.join(fixture, 'server');
@@ -122,6 +123,83 @@ try {
   assert.equal(nativeProgress, 0, 'Direct scp uses pipes; transfer progress must come from target-file sampling');
   console.log('PASS: direct Windows scp upload/download, content equality and packaged password/two-step askpass (loopback fixture).');
 
+  // One real folder scenario: Chinese/glob names, nesting, empty directories, skipped links.
+  const folderName = '模型 [文件夹]';
+  const remoteFolder = path.join(remoteRoot, folderName);
+  await fs.mkdir(path.join(remoteFolder, '子目录'), { recursive: true });
+  await fs.mkdir(path.join(remoteFolder, '空目录'));
+  await fs.writeFile(path.join(remoteFolder, sourceName), sourceBytes);
+  await fs.writeFile(path.join(remoteFolder, '子目录', '说明.txt'), '中文文件夹下载');
+  const localFolder = path.join(fixture, 'folder-download');
+  await fs.mkdir(localFolder);
+  const folderSource = `vscode-remote://${host.authority}/${encodeURIComponent(folderName)}`;
+  const localPath = uri => fileURLToPath(uri);
+  const diskInfo = async value => {
+    try {
+      const info = await fs.lstat(value);
+      return { size: info.size, mtime: info.mtimeMs, kind: info.isSymbolicLink() ? 'symlink' : info.isDirectory() ? 'directory' : info.isFile() ? 'file' : 'other' };
+    } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
+  };
+  const folderReader = {
+    async stat(uri) { return await diskInfo(remoteFile(decodeURIComponent(new URL(uri).pathname))); },
+    async readDirectory(uri) {
+      const location = remoteFile(decodeURIComponent(new URL(uri).pathname));
+      const entries = await fs.readdir(location, { withFileTypes: true });
+      const mapped = entries.map(item => [item.name, item.isDirectory() ? 'directory' : item.isFile() ? 'file' : 'symlink']);
+      if (location === remoteFolder) mapped.push(['不跟随的链接', 'symlink']);
+      return mapped;
+    }
+  };
+  const plan = await planDownload([folderSource], localFolder, host, folderReader, new AbortController().signal);
+  assert.equal(plan.fileCount, 2); assert.equal(plan.directoryCount, 3); assert.equal(plan.skipped, 1);
+  const folderFiles = {
+    async stat(uri) { return uri.startsWith('file:') ? await diskInfo(localPath(uri)) : await folderReader.stat(uri); },
+    async rename(from, to) { await fs.rename(localPath(from), localPath(to)); },
+    async remove(uri) { await fs.unlink(localPath(uri)); }
+  };
+  let folderQueue;
+  const folderEngine = new TransferEngine({ files: folderFiles, collision: async () => 'overwrite',
+    cancelBatch: id => folderQueue.cancelBatch(id), changed() {}, log() {},
+    async run(task) {
+      await actualScp(scpRemotePath(host.alias, decodeURIComponent(new URL(task.source).pathname), true), localArg(localPath(task.temporary)));
+    }
+  });
+  folderQueue = new TransferQueue(async (task, signal) => {
+    try {
+      await prepareDownloadTask(task, folderFiles, signal);
+      if (task.kind === 'directory') task.state = 'success';
+      else await folderEngine.execute(task, signal);
+    } catch (error) { if (task.kind === 'directory') folderQueue.cancelDescendants(task); throw error; }
+  }, () => {}, async () => {});
+  const folderTasks = folderQueue.enqueue(plan.seeds);
+  await waitFor(() => folderTasks.every(task => ['success', 'failed', 'cancelled'].includes(task.state)));
+  assert(folderTasks.every(task => task.state === 'success'), folderTasks.map(task => task.error).filter(Boolean).join('\n'));
+  assert.deepEqual(await fs.readFile(path.join(localFolder, folderName, sourceName)), sourceBytes);
+  assert.equal(await fs.readFile(path.join(localFolder, folderName, '子目录', '说明.txt'), 'utf8'), '中文文件夹下载');
+  assert((await fs.stat(path.join(localFolder, folderName, '空目录'))).isDirectory());
+  assert.equal((await fs.readdir(path.join(localFolder, folderName))).filter(name => name.endsWith('.part')).length, 0);
+
+  const cancelledScan = new AbortController();
+  await assert.rejects(planDownload([folderSource], localFolder, host, folderReader, cancelledScan.signal,
+    () => cancelledScan.abort()), /任务已取消/);
+  const blockedRoot = path.join(fixture, 'folder-blocked');
+  await fs.mkdir(blockedRoot);
+  const originalTarget = path.join(blockedRoot, folderName);
+  await fs.writeFile(originalTarget, 'keep original file');
+  const blockedPlan = await planDownload([folderSource], blockedRoot, host, folderReader, new AbortController().signal);
+  const blockedTasks = folderQueue.enqueue(blockedPlan.seeds);
+  await waitFor(() => blockedTasks.every(task => ['failed', 'cancelled'].includes(task.state)));
+  assert.equal(blockedTasks[0].state, 'failed');
+  assert(blockedTasks.slice(1).every(task => task.state === 'cancelled'));
+  assert.equal(await fs.readFile(originalTarget, 'utf8'), 'keep original file');
+  await fs.unlink(originalTarget);
+  const directoryRetry = folderQueue.retry(blockedTasks[0].id);
+  assert.equal(directoryRetry.length, blockedTasks.length);
+  await waitFor(() => directoryRetry.every(task => ['success', 'failed'].includes(task.state)));
+  assert(directoryRetry.every(task => task.state === 'success'));
+  await folderQueue.stop();
+  console.log('PASS: native scp folder download, nested/empty Chinese directories, skipped links, scan cancellation and safe folder retry.');
+
   // One compact queue scenario: overwrite only after success, FIFO, failure, cancel, retry.
   const storage = new Map();
   const source = 'file:///source', destination = 'file:///destination';
@@ -161,7 +239,8 @@ try {
   await fs.writeFile(path.join(workspace, 'test-results', 'smoke-result.json'), JSON.stringify({
     passed: true, time: new Date().toISOString(), fixture, nativeProgress, authPrompts: prompts,
     fileBytes: sourceBytes.length, scope: 'Windows real scp loopback; VS Code dialog simulated; queue scenario',
-    realRemoteSshWindowVerified: false, production400MbBenchmarkVerified: false
+    realRemoteSshWindowVerified: false, production400MbBenchmarkVerified: false,
+    folderDownloadVerified: true, folderFiles: plan.fileCount, folderDirectories: plan.directoryCount
   }, null, 2));
 } finally {
   auth.dispose();

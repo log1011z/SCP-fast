@@ -25,9 +25,11 @@ npm.cmd test
 npm.cmd run package
 ```
 
-`package` 自动执行 TypeScript 检查、辅助程序编译和扩展构建。输出为 `artifacts/scp-fast-1.0.0-win32-x64.vsix`。单独检查可执行 `npm.cmd run check`；在 VS Code 中按 F5 启动本地扩展开发窗口。
+`package` 自动执行 TypeScript 检查、辅助程序编译和扩展构建。输出为 `artifacts/scp-fast-1.1.0-win32-x64.vsix`。单独检查可执行 `npm.cmd run check`；在 VS Code 中按 F5 启动本地扩展开发窗口。
 
 测试保持精简：真实 Windows scp 回环上传／下载、密码及验证码认证，以及一个队列场景验证覆盖保护、失败清理、取消和重试。VS Code 输入框使用测试替身；这些测试不代表真实 Remote-SSH 窗口已验收。
+
+文件夹下载另外覆盖一个场景：实际 scp 下载中文嵌套目录中的文件、空目录保留、链接元数据跳过、扫描取消、本机目标文件保护，以及目录失败后的子任务重试。`src/download.ts` 负责只读清单扫描和本机目录准备，文件内容继续走原有传输引擎。
 
 ## 可选性能对比
 
