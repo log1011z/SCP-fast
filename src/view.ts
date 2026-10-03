@@ -36,12 +36,20 @@ export class TransferView implements vscode.TreeDataProvider<TransferTask>, vsco
   getTreeItem(task: TransferTask): vscode.TreeItem {
     const item = new vscode.TreeItem(task.name, vscode.TreeItemCollapsibleState.None);
     item.id = task.id;
-    const percent = task.totalBytes ? Math.min(task.state === 'success' ? 100 : 99, Math.floor(task.transferredBytes / task.totalBytes * 100)) : task.state === 'success' ? 100 : 0;
+    const percent = Math.floor(task.progressPercent ?? (task.totalBytes ? Math.min(task.state === 'success' ? 100 : 99, task.transferredBytes / task.totalBytes * 100) : task.state === 'success' ? 100 : 0));
     const direction = task.direction === 'download' ? '↓ 下载' : '↑ 上传';
-    if (task.state === 'transferring') {
+    if (task.members) {
+      const count = `${task.completedFiles}/${task.fileCount} 个文件`;
+      const skipped = task.skippedFiles ? ` · 跳过 ${task.skippedFiles} 个` : '';
+      item.description = `${direction} · ${stateNames[task.state]} · ${count}${skipped}`;
+      if (!terminalStates.has(task.state)) {
+        item.description += ` · 估算 ${percent}% · 已传 ${bytes(task.transferredBytes)}`;
+        if (task.state === 'transferring') item.description += ` · ${bytes(task.speed)}/s`;
+      } else if (task.state === 'success' && task.transferDurationMs) {
+        item.description += ` · ${bytes(task.transferredBytes)} · 平均 ${bytes(task.transferredBytes / (task.transferDurationMs / 1000))}/s`;
+      }
+    } else if (task.state === 'transferring') {
       item.description = `${direction} · ${task.progressEstimated ? '估算 ' : ''}${percent}% · ${bytes(task.transferredBytes)} / ${bytes(task.totalBytes)} · ${bytes(task.speed)}/s · 剩余 ${remainingTime(task.remainingSeconds)}`;
-    } else if (task.state === 'success' && task.kind === 'directory') {
-      item.description = `${direction} · 文件夹已准备`;
     } else if (task.state === 'success') {
       const elapsed = Math.max(0.001, (task.transferDurationMs ?? 0) / 1000);
       item.description = `${direction} · 成功 · ${bytes(task.totalBytes)} · 平均 ${bytes(task.totalBytes / elapsed)}/s`;
@@ -64,17 +72,18 @@ export class TransferView implements vscode.TreeDataProvider<TransferTask>, vsco
     return item;
   }
   getChildren(): TransferTask[] {
-    return [...this.queue.tasks.filter(task => !terminalStates.has(task.state)),
-      ...this.queue.tasks.filter(task => terminalStates.has(task.state)).slice(-100).reverse()];
+    const records = this.queue.records;
+    return [...records.filter(task => !terminalStates.has(task.state)),
+      ...records.filter(task => terminalStates.has(task.state)).slice(-100).reverse()];
   }
   private updateStatus(): void {
-    const task = this.queue.active;
+    const task = this.queue.active && this.queue.record(this.queue.active);
     if (task) {
-      const percent = task.totalBytes ? Math.min(99, Math.floor(task.transferredBytes / task.totalBytes * 100)) : 0;
+      const percent = Math.floor(task.progressPercent ?? (task.totalBytes ? Math.min(99, task.transferredBytes / task.totalBytes * 100) : 0));
       this.status.text = `$(sync~spin) SCP ${task.direction === 'download' ? '↓' : '↑'} ${task.state === 'transferring' ? `${percent}%` : stateNames[task.state]}${this.queue.waiting ? ` · ${this.queue.waiting} 等待` : ''}`;
       this.status.tooltip = `${task.name}\n${bytes(task.speed)}/s\n点击查看传输队列`;
     } else {
-      const failures = this.queue.tasks.filter(task => ['failed', 'interrupted'].includes(task.state)).length;
+      const failures = this.queue.records.filter(task => ['failed', 'interrupted'].includes(task.state)).length;
       this.status.text = failures ? `$(warning) SCP-Fast · ${failures} 失败/中断` : '$(check) SCP-Fast';
       this.status.tooltip = '点击查看传输队列';
     }

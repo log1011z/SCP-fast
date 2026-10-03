@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { CancelledError, TransferTask, terminalStates } from './types';
 import { errorMessage } from './util';
+import { transferRecords } from './records';
 
 export type TaskSeed = Pick<TransferTask, 'direction' | 'host' | 'source' | 'destination' | 'name'> &
   Partial<Pick<TransferTask, 'kind' | 'localRoot' | 'folderRoot'>>;
@@ -14,9 +15,10 @@ export class TransferQueue {
     private readonly changed: () => void, private readonly finished: (task: TransferTask) => Promise<void>) {}
 
   restore(history: TransferTask[]): void {
-    const pending = history.filter(value => value && !terminalStates.has(value.state));
-    const ended = history.filter(value => value && terminalStates.has(value.state)).slice(-100);
-    for (const value of [...ended, ...pending]) {
+    const records = transferRecords(history.filter(Boolean).flatMap(value => value.members ?? [value]));
+    const pending = records.filter(value => !terminalStates.has(value.state));
+    const ended = records.filter(value => terminalStates.has(value.state)).slice(-100);
+    for (const value of [...ended, ...pending].flatMap(value => value.members ?? [value])) {
       if (!value || typeof value.id !== 'string' || !value.host || !value.source || !value.destination) continue;
       const task = { ...value };
       if (!terminalStates.has(task.state)) {
@@ -75,9 +77,12 @@ export class TransferQueue {
 
   cancel(taskId?: string): void {
     const task = taskId ? this.tasks.find(value => value.id === taskId) : this.current?.task;
-    if (!task || terminalStates.has(task.state) || task.state === 'committing') return;
-    if (this.current?.task === task) this.current.controller.abort();
-    else { task.state = 'cancelled'; task.finishedAt = Date.now(); }
+    if (!task) return;
+    for (const member of this.members(task)) {
+      if (terminalStates.has(member.state) || member.state === 'committing') continue;
+      if (this.current?.task === member) this.current.controller.abort();
+      else { member.state = 'cancelled'; member.finishedAt = Date.now(); }
+    }
     this.changed();
   }
 
@@ -107,21 +112,39 @@ export class TransferQueue {
 
   retry(taskId: string): TransferTask[] {
     const previous = this.tasks.find(task => task.id === taskId);
-    if (!previous || !['failed', 'cancelled', 'interrupted'].includes(previous.state)) return [];
-    const seeds = previous.kind === 'directory' ? this.tasks.filter(task =>
-      (task === previous || this.descendant(task, previous)) && ['failed', 'cancelled', 'interrupted'].includes(task.state)) : [previous];
+    if (!previous) return [];
+    const record = this.record(previous);
+    if (!['failed', 'cancelled', 'interrupted'].includes(record.state)) return [];
+    const seeds: TaskSeed[] = this.members(previous).filter(task => ['failed', 'cancelled', 'interrupted'].includes(task.state));
+    if (previous.folderRoot && !seeds.some(task => task.destination === previous.folderRoot)) {
+      seeds.unshift({ ...record, kind: 'directory' });
+    }
     return this.enqueue(seeds);
   }
 
   clearFinished(): void {
+    const removable = new Set(this.records.filter(record => terminalStates.has(record.state) && !record.temporary)
+      .flatMap(record => (record.members ?? [record]).map(task => task.id)));
     for (let i = this.tasks.length - 1; i >= 0; i--) {
-      if (terminalStates.has(this.tasks[i].state) && !this.tasks[i].temporary) this.tasks.splice(i, 1);
+      if (removable.has(this.tasks[i].id)) this.tasks.splice(i, 1);
     }
     this.changed();
   }
 
   get active(): TransferTask | undefined { return this.current?.task; }
-  get waiting(): number { return this.tasks.filter(task => task.state === 'queued').length; }
+  get records(): TransferTask[] { return transferRecords(this.tasks); }
+  members(task: TransferTask): TransferTask[] {
+    return task.folderRoot ? this.tasks.filter(value => value.batchId === task.batchId && value.folderRoot === task.folderRoot) : [task];
+  }
+  record(task: TransferTask): TransferTask { return transferRecords(this.members(task))[0]; }
+  get waiting(): number { return this.records.filter(task => task.state === 'queued').length; }
+
+  history(): TransferTask[] {
+    const records = this.records;
+    return [...records.filter(task => terminalStates.has(task.state)).slice(-100),
+      ...records.filter(task => !terminalStates.has(task.state))].map(task => ({ ...task, host: { ...task.host },
+        members: task.members?.map(member => ({ ...member, host: { ...member.host } })) }));
+  }
 
   async stop(): Promise<void> {
     this.disposed = true;

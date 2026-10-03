@@ -52,15 +52,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let persistedSignature = '';
   let persistence = Promise.resolve();
   const persist = (): Promise<void> => {
-    const remembered = [...queue.tasks.filter(task => terminalStates.has(task.state)).slice(-100),
-      ...queue.tasks.filter(task => !terminalStates.has(task.state))];
-    const snapshot = remembered.map(task => ({ ...task, host: { ...task.host } }));
+    const snapshot = queue.history();
     persistence = persistence.then(() => context.workspaceState.update('scpFast.tasks', snapshot))
       .catch(error => { log.channel.appendLine(`任务记录保存失败：${errorMessage(error)}`); });
     return persistence;
   };
   const queue = new TransferQueue(async (task, signal) => {
-    await log.open(task);
+    const owner = queue.members(task).find(member => member.destination === task.folderRoot) ?? task;
+    await log.open(task, owner);
     try {
       await prepareDownloadTask(task, files, signal);
       if (task.kind === 'directory') {
@@ -87,21 +86,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void vscode.commands.executeCommand('workbench.files.action.refreshFilesExplorer').then(undefined,
           error => { log.channel.appendLine(`上传已成功；资源管理器刷新失败：${errorMessage(error)}`); });
       }
-    } else if (task.state === 'failed') {
-      void vscode.window.showErrorMessage(`SCP-Fast：${task.name} — ${task.error}`, '查看日志', '从头重试').then(action => {
-        if (action === '查看日志') void log.show(task);
-        if (action === '从头重试') queue.retry(task.id);
+    }
+    const record = queue.record(task);
+    if (record.members && terminalStates.has(record.state)) {
+      await log.open(record);
+      log.write(record, `文件夹${stateNames[record.state]}；处理 ${record.completedFiles}/${record.fileCount} 个文件；` +
+        `已传 ${bytes(record.transferredBytes)}；总耗时 ${duration(((record.finishedAt ?? Date.now()) - (record.startedAt ?? Date.now())) / 1000)}`);
+      await log.close(record);
+    }
+    if (record.state === 'failed') {
+      void vscode.window.showErrorMessage(`SCP-Fast：${record.name} — ${record.error}`, '查看日志', '从头重试').then(action => {
+        if (action === '查看日志') void log.show(record);
+        if (action === '从头重试') queue.retry(record.id);
       });
     }
-    const batch = queue.tasks.filter(value => value.batchId === task.batchId);
-    if (batch.every(value => terminalStates.has(value.state)) && (batch.length > 1 || task.state === 'success')) {
+    const batch = queue.records.filter(value => value.batchId === task.batchId);
+    if (batch.every(value => terminalStates.has(value.state)) && (batch.length > 1 || record.state === 'success')) {
       const fileTasks = batch.filter(value => value.kind !== 'directory');
       const done = fileTasks.filter(value => value.state === 'success').length;
-      const directories = batch.filter(value => value.kind === 'directory' && value.state === 'success').length;
+      const folders = batch.filter(value => value.kind === 'directory');
+      const directories = folders.filter(value => value.state === 'success').length;
       const failed = batch.filter(value => value.state === 'failed').length;
       const skipped = fileTasks.filter(value => value.state === 'skipped').length;
       const cancelled = fileTasks.filter(value => value.state === 'cancelled').length;
-      const message = `SCP-Fast：${fileTasks.length ? `本批次完成 ${done}/${fileTasks.length} 个文件` : `已创建 ${directories} 个文件夹`}` +
+      const message = `SCP-Fast：${[
+        fileTasks.length ? `完成 ${done}/${fileTasks.length} 个文件` : '',
+        folders.length ? `完成 ${directories}/${folders.length} 个文件夹` : ''
+      ].filter(Boolean).join('；')}` +
         `${failed ? `；${failed} 个任务失败` : ''}${skipped ? `；${skipped} 个文件跳过` : ''}${cancelled ? `；${cancelled} 个文件取消` : ''}`;
       const downloaded = batch.find(value => value.direction === 'download' && value.state === 'success');
       const notify = failed ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
@@ -202,7 +213,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('scpFast.cancel', (task?: TransferTask) => queue.cancel(task?.id));
   command('scpFast.retry', (task?: TransferTask) => { if (task) queue.retry(task.id); });
   command('scpFast.openFolder', openFolder);
-  command('scpFast.showLog', (task?: TransferTask) => log.show(task));
+  command('scpFast.showLog', (task?: TransferTask) => log.show(task ? queue.record(task) : undefined));
   command('scpFast.clearFinished', () => queue.clearFinished());
   command('scpFast.selectHost', async () => {
     const uri = remoteUri(vscode.workspace.workspaceFolders?.[0]?.uri);

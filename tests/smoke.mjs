@@ -172,8 +172,15 @@ try {
     } catch (error) { if (task.kind === 'directory') folderQueue.cancelDescendants(task); throw error; }
   }, () => {}, async () => {});
   const folderTasks = folderQueue.enqueue(plan.seeds);
+  assert.equal(folderQueue.records.length, 1, 'Folder contents must appear as one record');
+  assert.equal(folderQueue.records[0].name, folderName);
+  assert.equal(folderQueue.records[0].state, 'queued');
   await waitFor(() => folderTasks.every(task => ['success', 'failed', 'cancelled'].includes(task.state)));
   assert(folderTasks.every(task => task.state === 'success'), folderTasks.map(task => task.error).filter(Boolean).join('\n'));
+  assert.equal(folderQueue.records[0].state, 'success');
+  assert.equal(folderQueue.records[0].completedFiles, 2);
+  assert.equal(folderQueue.records[0].transferredBytes, sourceBytes.length + Buffer.byteLength('中文文件夹下载'));
+  assert.equal(folderQueue.history().length, 1);
   assert.deepEqual(await fs.readFile(path.join(localFolder, folderName, sourceName)), sourceBytes);
   assert.equal(await fs.readFile(path.join(localFolder, folderName, '子目录', '说明.txt'), 'utf8'), '中文文件夹下载');
   assert((await fs.stat(path.join(localFolder, folderName, '空目录'))).isDirectory());
@@ -191,14 +198,65 @@ try {
   await waitFor(() => blockedTasks.every(task => ['failed', 'cancelled'].includes(task.state)));
   assert.equal(blockedTasks[0].state, 'failed');
   assert(blockedTasks.slice(1).every(task => task.state === 'cancelled'));
+  assert.equal(folderQueue.records.length, 2, 'Separate selections remain separate folder records');
+  assert.equal(folderQueue.records[1].state, 'failed');
   assert.equal(await fs.readFile(originalTarget, 'utf8'), 'keep original file');
   await fs.unlink(originalTarget);
   const directoryRetry = folderQueue.retry(blockedTasks[0].id);
   assert.equal(directoryRetry.length, blockedTasks.length);
   await waitFor(() => directoryRetry.every(task => ['success', 'failed'].includes(task.state)));
   assert(directoryRetry.every(task => task.state === 'success'));
+  const restored = new TransferQueue(async () => {}, () => {}, async () => {});
+  restored.restore(JSON.parse(JSON.stringify(folderQueue.history())));
+  assert.equal(restored.records.length, 3);
+  assert.equal(restored.tasks.length, folderQueue.tasks.length);
+  restored.clearFinished();
+  assert.equal(restored.records.length, 0);
+  await restored.stop();
   await folderQueue.stop();
   console.log('PASS: native scp folder download, nested/empty Chinese directories, skipped links, scan cancellation and safe folder retry.');
+
+  // One grouped-record scenario: partial progress, clear while active, cancellation and retry.
+  let grouped, releaseFile;
+  let holdFile = true;
+  const held = new Promise(resolve => { releaseFile = resolve; });
+  grouped = new TransferQueue(async (task, signal) => {
+    if (task.kind !== 'directory') {
+      task.totalBytes = 100; task.transferredBytes = 50; task.state = 'transferring';
+      if (holdFile) await held;
+      signal.throwIfAborted();
+      task.transferredBytes = 100;
+    }
+    task.state = 'success';
+  }, () => {}, async () => {});
+  const groupedTasks = grouped.enqueue(plan.seeds);
+  await waitFor(() => grouped.active?.kind === 'file');
+  assert.equal(grouped.records[0].state, 'transferring', 'Successful directory preparation must not complete the folder');
+  assert.equal(grouped.records[0].progressPercent, 25);
+  grouped.clearFinished();
+  assert.equal(grouped.tasks.length, plan.seeds.length, 'Clearing history must retain all members of an active folder');
+  const interrupted = new TransferQueue(async () => {}, () => {}, async () => {});
+  interrupted.restore(grouped.history());
+  assert.equal(interrupted.records[0].state, 'interrupted');
+  await interrupted.stop();
+  grouped.cancel(groupedTasks[0].id);
+  releaseFile();
+  await waitFor(() => !grouped.active);
+  assert.equal(grouped.records[0].state, 'cancelled');
+  assert(groupedTasks.filter(task => task.kind === 'file').every(task => task.state === 'cancelled'));
+  holdFile = false;
+  const groupedRetry = grouped.retry(groupedTasks[0].id);
+  assert(groupedRetry.length > 0, 'Retry must work when the root directory itself succeeded');
+  await waitFor(() => groupedRetry.every(task => task.state === 'success'));
+  assert.equal(grouped.records.length, 2);
+  assert.equal(grouped.records[1].name, folderName);
+  assert.equal(grouped.records[1].state, 'success');
+  const oldHistory = new TransferQueue(async () => {}, () => {}, async () => {});
+  oldHistory.restore(grouped.tasks);
+  assert.equal(oldHistory.records.length, 2, 'Migrate old flat folder history');
+  await oldHistory.stop();
+  await grouped.stop();
+  console.log('PASS: one folder record, aggregated progress, grouped history/restore, cancel and retry.');
 
   // One compact queue scenario: overwrite only after success, FIFO, failure, cancel, retry.
   const storage = new Map();
@@ -240,7 +298,8 @@ try {
     passed: true, time: new Date().toISOString(), fixture, nativeProgress, authPrompts: prompts,
     fileBytes: sourceBytes.length, scope: 'Windows real scp loopback; VS Code dialog simulated; queue scenario',
     realRemoteSshWindowVerified: false, production400MbBenchmarkVerified: false,
-    folderDownloadVerified: true, folderFiles: plan.fileCount, folderDirectories: plan.directoryCount
+    folderDownloadVerified: true, folderFiles: plan.fileCount, folderDirectories: plan.directoryCount,
+    folderRecordsVerified: true
   }, null, 2));
 } finally {
   auth.dispose();

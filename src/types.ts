@@ -24,6 +24,12 @@ export interface TransferTask {
   kind?: 'file' | 'directory';
   localRoot?: string;
   folderRoot?: string;
+  // Folder records keep execution details internally, without exposing child rows.
+  members?: TransferTask[];
+  fileCount?: number;
+  completedFiles?: number;
+  skippedFiles?: number;
+  progressPercent?: number;
   state: TaskState;
   totalBytes: number;
   transferredBytes: number;

@@ -24,12 +24,13 @@ export class TransferLog implements vscode.Disposable, vscode.TextDocumentConten
     await Promise.all(entries.slice(100).map(entry => fs.unlink(path.join(this.directory, entry.name)).catch(() => {})));
   }
 
-  async open(task: TransferTask): Promise<void> {
-    task.logPath = path.join(this.directory, `${task.id}.log`);
+  async open(task: TransferTask, owner: TransferTask = task): Promise<void> {
+    task.logPath = owner.logPath = path.join(this.directory, `${owner.id}.log`);
+    const size = await fs.stat(task.logPath).then(info => info.size, () => 0);
     const stream = createWriteStream(task.logPath, { flags: 'a', encoding: 'utf8' });
     stream.on('error', error => this.channel.appendLine(`日志写入失败：${error.message}`));
-    this.entries.set(task.id, { stream, size: 0, truncated: false });
-    this.write(task, `文件 ${task.name}\n服务器 ${task.host.alias} (${task.host.user}@${task.host.hostname}:${task.host.port})\n源 ${task.source}\n目标 ${task.destination}`);
+    this.entries.set(task.id, { stream, size, truncated: size >= 2 * 1024 * 1024 });
+    this.write(task, `${task.kind === 'directory' ? '文件夹' : '文件'} ${task.name}\n服务器 ${task.host.alias} (${task.host.user}@${task.host.hostname}:${task.host.port})\n源 ${task.source}\n目标 ${task.destination}`);
   }
 
   write(task: TransferTask, message: string): void {
@@ -55,7 +56,7 @@ export class TransferLog implements vscode.Disposable, vscode.TextDocumentConten
       entry.stream.write('\n[日志达到 2 MB 上限，后续原始输出不再记录]\n');
       entry.truncated = true;
     } else { entry.stream.write(buffer); entry.size += buffer.length; }
-    if (!this.refreshTimer && this.displayed.has(task.id)) {
+    if (!this.refreshTimer && this.displayed.size) {
       this.refreshTimer = setTimeout(() => {
         this.refreshTimer = undefined;
         for (const { uri } of this.displayed.values()) this.emitter.fire(uri);
@@ -72,8 +73,7 @@ export class TransferLog implements vscode.Disposable, vscode.TextDocumentConten
       entry.stream.once('error', () => resolve());
       entry.stream.end(() => resolve());
     });
-    const shown = this.displayed.get(task.id);
-    if (shown) this.emitter.fire(shown.uri);
+    for (const shown of this.displayed.values()) this.emitter.fire(shown.uri);
   }
 
   async show(task?: TransferTask): Promise<void> {
@@ -92,7 +92,13 @@ export class TransferLog implements vscode.Disposable, vscode.TextDocumentConten
   async provideTextDocumentContent(uri: vscode.Uri): Promise<string> {
     const task = this.displayed.get(uri.query)?.task;
     if (!task?.logPath || path.dirname(task.logPath) !== this.directory) return '任务日志不存在或已清理。';
-    return displayTaskText(task, await fs.readFile(task.logPath, 'utf8'));
+    const paths = new Map((task.members ?? [task]).filter(member => member.logPath && path.dirname(member.logPath) === this.directory)
+      .map(member => [member.logPath!, member]));
+    const sections = await Promise.all([...paths].map(async ([file, member]) => {
+      try { return displayTaskText(member, await fs.readFile(file, 'utf8')); }
+      catch { return `${member.name}：日志不存在或已清理。`; }
+    }));
+    return sections.join('\n');
   }
 
   dispose(): void {

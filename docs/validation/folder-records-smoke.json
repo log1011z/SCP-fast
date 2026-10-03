@@ -1,0 +1,15 @@
+{
+  "passed": true,
+  "time": "2026-10-03T11:17:58.695Z",
+  "fixture": "D:\\Simple-SCP\\test-results\\smoke-cf2da9de-a2d2-4cde-b947-2d3a52ecd023",
+  "nativeProgress": 0,
+  "authPrompts": 7,
+  "fileBytes": 2097152,
+  "scope": "Windows real scp loopback; VS Code dialog simulated; queue scenario",
+  "realRemoteSshWindowVerified": false,
+  "production400MbBenchmarkVerified": false,
+  "folderDownloadVerified": true,
+  "folderFiles": 2,
+  "folderDirectories": 3,
+  "folderRecordsVerified": true
+}

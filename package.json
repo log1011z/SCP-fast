@@ -2,7 +2,7 @@
   "name": "scp-fast",
   "displayName": "SCP-Fast",
   "description": "在 Remote-SSH 资源管理器中，通过 Windows 本机 scp 快速上传和下载文件。",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "publisher": "scp-fast-local",
   "license": "MIT",
   "engines": {
@@ -37,7 +37,7 @@
     "build:helper": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build-helper.ps1",
     "test": "node scripts/test.mjs",
     "vscode:prepublish": "npm run check && npm run build:helper && npm run build",
-    "package": "vsce package --target win32-x64 --no-dependencies --allow-missing-repository -o artifacts/scp-fast-1.1.0-win32-x64.vsix"
+    "package": "vsce package --target win32-x64 --no-dependencies --allow-missing-repository -o artifacts/scp-fast-1.1.1-win32-x64.vsix"
   },
   "contributes": {
     "commands": [
