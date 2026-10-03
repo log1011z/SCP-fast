@@ -1,0 +1,15 @@
+{
+  "date": "2026-10-03T06:21:35.069Z",
+  "bytes": 393798587,
+  "file": "output.zip",
+  "nativeMs": 55098,
+  "pluginScpMs": 54919,
+  "pluginTotalMs": 56063,
+  "ratio": 1.0175142473411014,
+  "preparationMs": 576,
+  "verificationMs": 567,
+  "commitMs": 0,
+  "progressUpdates": 57,
+  "maxEventLoopDelayMs": 15,
+  "limitations": "Noninteractive authentication for both runs. Real Windows scp and plugin transfer engine; remote metadata uses SSH stat instead of VS Code workspace.fs. Editor and terminal responsiveness not measured."
+}

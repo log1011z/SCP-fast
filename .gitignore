@@ -1,0 +1,9 @@
+node_modules/
+dist/
+artifacts/
+bin/
+test-results/
+*.vsix
+.env
+.env.*
+*.log

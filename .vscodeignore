@@ -1,0 +1,15 @@
+.vscode/**
+src/**
+scripts/**
+native/**
+tests/**
+test-results/**
+artifacts/**
+node_modules/**
+docs/**
+.git/**
+.gitattributes
+tsconfig.json
+package-lock.json
+.gitignore
+**/*.map

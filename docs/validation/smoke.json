@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "passed": true,
+  "time": "2026-10-03T06:38:55.062Z",
+  "fileBytes": 2097152,
+  "authPrompts": 3,
+  "scope": "Windows real scp loopback; VS Code dialog simulated; queue scenario",
+  "realRemoteSshWindowVerified": false,
+  "production400MbBenchmarkRerun": false
+}
