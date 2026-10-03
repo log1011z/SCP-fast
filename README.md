@@ -1,10 +1,10 @@
-# SCP-Fast 1.1.1
+# SCP-Fast 1.1.2
 
 在 VS Code 的 Remote-SSH 默认资源管理器中，使用 **Windows 本机 OpenSSH scp** 上传、下载文件。大文件内容由 scp 直接传输，扩展只处理队列、认证、进度和文件提交。
 
 ## 安装
 
-1. 在 Windows 本机 VS Code 中执行 **Extensions: Install from VSIX…（扩展：从 VSIX 安装）**，选择 `scp-fast-1.1.1-win32-x64.vsix`。
+1. 在 Windows 本机 VS Code 中执行 **Extensions: Install from VSIX…（扩展：从 VSIX 安装）**，选择 `scp-fast-1.1.2-win32-x64.vsix`。
 2. 使用 Remote-SSH 打开 Linux 服务器上的目录。扩展运行在本机，服务器不需要安装 SCP-Fast。
 3. 在服务器文件或文件夹上右键，即可看到下列菜单。可通过 **Developer: Show Running Extensions** 检查扩展的运行位置。
 
@@ -26,7 +26,7 @@
 - 上传与下载共用 FIFO 队列，同一窗口同时传一个文件。不同窗口队列独立。
 - 活跃任务旁的停止按钮取消该任务；等待中的任务也可以取消。正式文件提交阶段不可取消。
 - 失败、取消或中断的任务可以从头重试。重试会再次检查重名和源文件。
-- 成功下载后可以打开 Windows 本机所在文件夹；上传后刷新远端资源管理器。
+- 成功下载后可以打开 Windows 本机所在文件夹：单文件打开其父目录，文件夹任务打开下载的根目录；上传后刷新远端资源管理器。
 - 按服务器分别记住最近下载目录和上传文件选择位置。
 - 完成提示不会阻塞下一项传输。
 

@@ -117,7 +117,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       const downloaded = batch.find(value => value.direction === 'download' && value.state === 'success');
       const notify = failed ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
       void notify(message, ...(downloaded ? ['打开本机文件夹', '查看队列'] : ['查看队列'])).then(action => {
-        if (action === '打开本机文件夹') void openFolder(downloaded);
+        if (action === '打开本机文件夹') void openFolder(downloaded).catch(reportOpenFolderError);
         else if (action === '查看队列') void vscode.commands.executeCommand('scpFast.transfers.focus');
       });
     }
@@ -212,7 +212,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   command('scpFast.showQueue', () => vscode.commands.executeCommand('scpFast.transfers.focus'));
   command('scpFast.cancel', (task?: TransferTask) => queue.cancel(task?.id));
   command('scpFast.retry', (task?: TransferTask) => { if (task) queue.retry(task.id); });
-  command('scpFast.openFolder', openFolder);
+  command('scpFast.openFolder', (task?: TransferTask) => openFolder(task).catch(reportOpenFolderError));
   command('scpFast.showLog', (task?: TransferTask) => log.show(task ? queue.record(task) : undefined));
   command('scpFast.clearFinished', () => queue.clearFinished());
   command('scpFast.selectHost', async () => {
@@ -220,17 +220,29 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     const profile = await hosts.resolve(uri.authority, true);
     if (profile) void vscode.window.showInformationMessage(`SCP-Fast：当前服务器使用 SSH 条目 ${profile.alias}`);
   });
+  function reportOpenFolderError(error: unknown): void {
+    const message = `无法打开本机文件夹：${errorMessage(error)}`;
+    log.channel.appendLine(message);
+    void vscode.window.showErrorMessage(message);
+  }
 }
 
 async function openFolder(task?: TransferTask): Promise<void> {
   if (!task || task.direction !== 'download' || task.state !== 'success') return;
   const destination = vscode.Uri.parse(task.folderRoot ?? task.destination);
-  const explorer = path.join(process.env.WINDIR ?? 'C:\\Windows', 'explorer.exe');
-  const { spawn } = await import('node:child_process');
-  const child = spawn(explorer, task.folderRoot || task.kind === 'directory' ? [destination.fsPath] : ['/select,', destination.fsPath],
-    { windowsHide: true, shell: false, detached: true, stdio: 'ignore' });
-  child.on('error', error => { void vscode.window.showErrorMessage(`无法打开本机文件夹：${error.message}`); });
-  child.unref();
+  if (destination.scheme !== 'file') throw new Error('下载记录中的目标不是本机路径。');
+  const directory = task.folderRoot || task.kind === 'directory' ? destination.fsPath : path.dirname(destination.fsPath);
+  try {
+    if (!(await fs.stat(directory)).isDirectory()) throw new Error(`目标不是文件夹：${directory}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error(`文件夹不存在，可能已被移动或删除：${directory}`);
+    throw error;
+  }
+  // Ask the local VS Code client to open the directory through the OS shell.
+  // Do not hide Explorer or use its command-line selection/quoting conventions.
+  if (!await vscode.env.openExternal(vscode.Uri.file(directory))) {
+    throw new Error(`系统未能打开文件夹，请在资源管理器中打开：${directory}`);
+  }
 }
 
 function collision(task: TransferTask, changed: boolean, signal: AbortSignal): Promise<CollisionChoice> {
