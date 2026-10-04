@@ -47,4 +47,6 @@ node scripts/benchmark-download.mjs user@host 22 /absolute/path/file.zip
 
 同时更新 `package.json` 与 `package-lock.json` 的版本号、VSIX 输出文件名、README 的安装文件名和 CHANGELOG。通过精简检查后生成安装包，提交源码并创建同名版本标签，例如 `v1.0.0`。
 
-当前发布形式为本地 VSIX 和本地 Git 标签。上传 GitHub Release 或 VS Code Marketplace 时，需要配置对应远端仓库或发布者账号；当前工程未配置这些发布目标。
+远端仓库为 `https://github.com/log1011z/SCP-fast`。正式版本使用 Git 标签，并在 GitHub Releases 附带对应 Windows x64 VSIX；发布前确认标签源码与安装包一致，上传后核对附件大小及 SHA-256。新版本发布验证完成后清理旧 VSIX 安装包，Git 提交和版本标签保留作历史记录。
+
+本项目当前通过 GitHub Release 分发，尚未发布到 VS Code Marketplace。

@@ -4,6 +4,8 @@
 
 ## 安装
 
+从 [GitHub Releases](https://github.com/log1011z/SCP-fast/releases/latest) 下载最新 Windows x64 安装包。
+
 1. 在 Windows 本机 VS Code 中执行 **Extensions: Install from VSIX…（扩展：从 VSIX 安装）**，选择 `scp-fast-1.1.2-win32-x64.vsix`。
 2. 使用 Remote-SSH 打开 Linux 服务器上的目录。扩展运行在本机，服务器不需要安装 SCP-Fast。
 3. 在服务器文件或文件夹上右键，即可看到下列菜单。可通过 **Developer: Show Running Extensions** 检查扩展的运行位置。
